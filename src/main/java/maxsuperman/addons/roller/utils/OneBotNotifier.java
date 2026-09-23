@@ -52,7 +52,13 @@ public class OneBotNotifier {
         /** 村民未在规定时间内接受职业。限流 1 分钟。 */
         PROFESSION_TIMEOUT("职业超时", 60_000),
         /** 因错误中止，例如附魔注册表读不到、目标村民消失。限流 30 秒。 */
-        ERROR("运行错误", 30_000);
+        ERROR("运行错误", 30_000),
+        /** 成功买下目标附魔，村民交易已锁定。不限流。 */
+        TRADE_LOCKED("锁定成功", 0),
+        /** 锁定失败，例如已售罄或服务端拒绝。限流 30 秒。 */
+        TRADE_FAILED("锁定失败", 30_000),
+        /** 背包里的绿宝石或书不够支付，无法锁定。限流 30 秒。 */
+        TRADE_INSUFFICIENT("物品不足", 30_000);
 
         private final String label;
         private final long minIntervalMs;

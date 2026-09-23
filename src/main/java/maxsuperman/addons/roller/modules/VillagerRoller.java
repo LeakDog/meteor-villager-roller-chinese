@@ -5,6 +5,7 @@ import it.unimi.dsi.fastutil.objects.ObjectIntImmutablePair;
 import maxsuperman.addons.roller.gui.screens.EnchantmentSelectScreen;
 import maxsuperman.addons.roller.utils.OneBotNotifier;
 import maxsuperman.addons.roller.utils.RollNotifier;
+import maxsuperman.addons.roller.utils.TradeLocker;
 import meteordevelopment.meteorclient.MeteorClient;
 import meteordevelopment.meteorclient.events.entity.player.InteractEntityEvent;
 import meteordevelopment.meteorclient.events.entity.player.StartBreakingBlockEvent;
@@ -95,6 +96,21 @@ public class VillagerRoller extends Module {
         .name("disconnect-when-found")
         .description("找到列表中的附魔后自动断开服务器连接")
         .defaultValue(false)
+        .build()
+    );
+
+    private final Setting<Boolean> lockTrade = sgGeneral.add(new BoolSetting.Builder()
+        .name("lock-trade")
+        .description("刷到目标附魔后立刻买下这本书，把村民的职业和交易永久锁定。会消耗背包里的绿宝石和书，默认关闭")
+        .defaultValue(false)
+        .build()
+    );
+
+    private final Setting<Boolean> lockTradeKeepEnabled = sgGeneral.add(new BoolSetting.Builder()
+        .name("lock-trade-retry")
+        .description("锁定失败（物品不足、背包已满、已售罄）时保持模块开启并停在交易界面，便于你补货后手动完成。关闭则直接停止")
+        .defaultValue(true)
+        .visible(lockTrade::get)
         .build()
     );
 
@@ -353,6 +369,33 @@ public class VillagerRoller extends Module {
         .name("onebot-msg-found")
         .description("刷出目标附魔时的消息。留空则不推送。占位符：{enchant} 附魔名、{level} 等级、{price} 价格、{player} 玩家名、{server} 服务器地址")
         .defaultValue("【村民刷附魔】已刷出 {enchant} {level} 级，售价 {price} 绿宝石")
+        .wide()
+        .visible(onebotEnabled::get)
+        .build()
+    );
+
+    private final Setting<String> onebotMsgTradeLocked = sgOneBot.add(new StringSetting.Builder()
+        .name("onebot-msg-trade-locked")
+        .description("成功买下附魔、村民交易已锁定时的消息。留空则不推送。占位符：{enchant}、{level}、{price}、{cost} 实际支付、{player}、{server}")
+        .defaultValue("【村民刷附魔】已锁定 {enchant} {level} 级，支付 {cost}")
+        .wide()
+        .visible(onebotEnabled::get)
+        .build()
+    );
+
+    private final Setting<String> onebotMsgTradeFailed = sgOneBot.add(new StringSetting.Builder()
+        .name("onebot-msg-trade-failed")
+        .description("锁定失败时的消息，例如已售罄、背包已满。每 30 秒最多一条。占位符：{reason}、{enchant}、{level}、{player}、{server}")
+        .defaultValue("【村民刷附魔】锁定失败：{reason}")
+        .wide()
+        .visible(onebotEnabled::get)
+        .build()
+    );
+
+    private final Setting<String> onebotMsgTradeInsufficient = sgOneBot.add(new StringSetting.Builder()
+        .name("onebot-msg-trade-insufficient")
+        .description("背包物品不足、无法锁定时的消息。每 30 秒最多一条。占位符：{reason}、{enchant}、{level}、{player}、{server}")
+        .defaultValue("【村民刷附魔】物品不足，无法锁定 {enchant}：{reason}")
         .wide()
         .visible(onebotEnabled::get)
         .build()
@@ -881,7 +924,9 @@ public class VillagerRoller extends Module {
         }
         Registry<Enchantment> reg = registry.get();
 
-        for (MerchantOffer offer : l) {
+        // 用下标遍历：锁定交易时需要把交易序号发给服务端
+        for (int offerIndex = 0; offerIndex < l.size(); offerIndex++) {
+            MerchantOffer offer = l.get(offerIndex);
             ItemStack sellItem = offer.getResult();
             if (!sellItem.is(Items.ENCHANTED_BOOK) || sellItem.get(DataComponents.STORED_ENCHANTMENTS) == null)
                 continue;
@@ -932,6 +977,16 @@ public class VillagerRoller extends Module {
                     }
                     notifyFound(enchantName, enchantLevel, price);
 
+                    // 锁定要在关容器之前做，交易界面一关就没法再交易了
+                    boolean locked = false;
+                    boolean keepScreen = false;
+                    if (lockTrade.get()) {
+                        locked = tryLockTrade(offerIndex, enchantName, enchantLevel, price);
+                        // 成功时保留界面，避免立刻关容器打断服务端的取物处理；
+                        // 失败且要求保留现场时也停在界面上，让玩家补货后手动完成
+                        keepScreen = locked || lockTradeKeepEnabled.get();
+                    }
+
                     toggle();
 
                     if (disconnectIfFound.get()) {
@@ -951,7 +1006,11 @@ public class VillagerRoller extends Module {
                             ChatFormatting.GRAY
                         );
                         mc.getConnection().getConnection().disconnect(Component.nullToEmpty(message));
+                        return;
                     }
+
+                    // 保留交易界面时跳过末尾的 closeContainer
+                    if (keepScreen) return;
                     break;
                 }
                 if (!found && cfIgnored.get()) {
@@ -1006,15 +1065,7 @@ public class VillagerRoller extends Module {
     private void pushOneBot(OneBotNotifier.Category category, Map<String, String> values) {
         if (!onebotEnabled.get()) return;
 
-        String template = switch (category) {
-            case FOUND -> onebotMsgFound.get();
-            case STARTED -> onebotMsgStarted.get();
-            case STOPPED -> onebotMsgStopped.get();
-            case ERROR -> onebotMsgError.get();
-            case PLACE_FAILED -> onebotMsgPlaceFailed.get();
-            case ANOMALY -> onebotMsgAnomaly.get();
-            case PROFESSION_TIMEOUT -> onebotMsgProfessionTimeout.get();
-        };
+        String template = templateFor(category);
         if (template == null || template.isBlank()) return;
 
         Map<String, String> all = new HashMap<>();
@@ -1037,19 +1088,12 @@ public class VillagerRoller extends Module {
         sample.put("enchant", "经验修补");
         sample.put("level", "1");
         sample.put("price", "17");
+        sample.put("cost", "17 个绿宝石 + 1 个书");
         sample.put("reason", "示例原因");
 
         boolean any = false;
         for (OneBotNotifier.Category category : OneBotNotifier.Category.values()) {
-            String template = switch (category) {
-                case FOUND -> onebotMsgFound.get();
-                case STARTED -> onebotMsgStarted.get();
-                case STOPPED -> onebotMsgStopped.get();
-                case ERROR -> onebotMsgError.get();
-                case PLACE_FAILED -> onebotMsgPlaceFailed.get();
-                case ANOMALY -> onebotMsgAnomaly.get();
-                case PROFESSION_TIMEOUT -> onebotMsgProfessionTimeout.get();
-            };
+            String template = templateFor(category);
             if (template == null || template.isBlank()) continue;
 
             any = true;
@@ -1059,6 +1103,61 @@ public class VillagerRoller extends Module {
         if (!any) {
             info("所有消息模板都是空的，当前不会推送任何通知");
         }
+    }
+
+    /**
+     * 买下目标附魔以锁定村民交易。
+     *
+     * <p>村民被交易过一次后职业就固定了，之后再破坏工作方块也不会重置，
+     * 所以这一步能保住刷到的结果。
+     *
+     * @return 是否锁定成功
+     */
+    private boolean tryLockTrade(int offerIndex, String enchantName, int enchantLevel, int price) {
+        TradeLocker.Result result = TradeLocker.lock(offerIndex);
+
+        Map<String, String> values = new HashMap<>();
+        values.put("enchant", enchantName);
+        values.put("level", String.valueOf(enchantLevel));
+        values.put("price", String.valueOf(price));
+        values.put("cost", result.detail());
+        values.put("reason", result.detail());
+
+        if (result.ok()) {
+            info("已买下该附魔并锁定村民交易，支付 " + result.detail());
+            pushOneBot(OneBotNotifier.Category.TRADE_LOCKED, values);
+            return true;
+        }
+
+        // 物品不足和其他失败分开推送，方便玩家判断要不要去补货
+        if (result.status() == TradeLocker.Status.NOT_ENOUGH_ITEMS) {
+            error("锁定失败，" + result.detail());
+            pushOneBot(OneBotNotifier.Category.TRADE_INSUFFICIENT, values);
+        } else {
+            error("锁定失败：" + result.detail());
+            pushOneBot(OneBotNotifier.Category.TRADE_FAILED, values);
+        }
+
+        if (lockTradeKeepEnabled.get()) {
+            info("模块保持开启并停在交易界面，处理好后可手动交易，或关闭 lock-trade-retry 让它直接停止");
+        }
+        return false;
+    }
+
+    /** 取某一类别对应的消息模板。 */
+    private String templateFor(OneBotNotifier.Category category) {
+        return switch (category) {
+            case FOUND -> onebotMsgFound.get();
+            case STARTED -> onebotMsgStarted.get();
+            case STOPPED -> onebotMsgStopped.get();
+            case ERROR -> onebotMsgError.get();
+            case PLACE_FAILED -> onebotMsgPlaceFailed.get();
+            case ANOMALY -> onebotMsgAnomaly.get();
+            case PROFESSION_TIMEOUT -> onebotMsgProfessionTimeout.get();
+            case TRADE_LOCKED -> onebotMsgTradeLocked.get();
+            case TRADE_FAILED -> onebotMsgTradeFailed.get();
+            case TRADE_INSUFFICIENT -> onebotMsgTradeInsufficient.get();
+        };
     }
 
     /** 当前所连服务器地址，单人或取不到时返回「单人游戏」。 */
