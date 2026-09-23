@@ -51,7 +51,12 @@ public class TradeLocker {
      * 尝试用第 {@code index} 个交易完成一次购买。
      *
      * <p>调用前必须确保交易界面仍然打开。执行顺序与原版客户端一致：
-     * 先本地选中交易并同步给服务端，再从结果槽 shift 取物。
+     * 先本地选中交易并同步给服务端，再从结果槽取走一次产出物。
+     *
+     * <p><b>只成交一次。</b>这里刻意不用 shift 取物：产出槽被取空后服务端会立刻结算并补上
+     * 新的产出物，而 {@code QUICK_MOVE} 在服务端是个循环，只要产出槽还能补出同种物品就会
+     * 继续取，结果会把背包里的绿宝石和书全部换成附魔书。改用两次普通点击（拿到光标、
+     * 再放进空格）就只会成交一次。
      */
     public static Result lock(int index) {
         if (mc.player == null) return new Result(Status.NO_SCREEN, "玩家不存在");
@@ -73,8 +78,10 @@ public class TradeLocker {
         Result affordable = checkAffordable(offer);
         if (!affordable.ok()) return affordable;
 
-        if (!hasRoomForResult(offer.getResult())) {
-            return new Result(Status.INVENTORY_FULL, "背包已满，放不下产出物");
+        // 取物要放到背包空格里，所以必须先有一个真正的空位
+        int emptySlotId = findEmptySlotId(menu);
+        if (emptySlotId == -1) {
+            return new Result(Status.INVENTORY_FULL, "背包没有空格，放不下产出物");
         }
 
         // 本地选中 + 通知服务端，两者都要做：前者让客户端把付款物摆进付款槽，
@@ -83,10 +90,25 @@ public class TradeLocker {
         menu.tryMoveItems(index);
         mc.getConnection().send(new ServerboundSelectTradePacket(index));
 
-        // shift 点击结果槽，等价于玩家按住 Shift 取走产出物
-        InvUtils.shiftClick().slotId(RESULT_SLOT);
+        // 第一次点击把产出物拿到光标上，这一下就完成了本次交易
+        InvUtils.click().slotId(RESULT_SLOT);
+        // 第二次点击把它放进背包空格，避免光标上还挂着物品
+        InvUtils.click().slotId(emptySlotId);
 
         return new Result(Status.SUCCESS, describeCost(offer));
+    }
+
+    /**
+     * 找一个空的背包槽位并返回它在容器里的槽位号。
+     *
+     * <p>交易界面的槽位布局是：0、1 为付款槽，2 为产出槽，之后依次是主背包与快捷栏。
+     * 所以直接从产出槽之后开始找，得到的就是可用于容器点击的槽位号。
+     */
+    private static int findEmptySlotId(MerchantMenu menu) {
+        for (int id = RESULT_SLOT + 1; id < menu.slots.size(); id++) {
+            if (!menu.getSlot(id).hasItem()) return id;
+        }
+        return -1;
     }
 
     /** 背包里的物品是否够支付这笔交易的两项成本。 */
@@ -134,25 +156,7 @@ public class TradeLocker {
         return total;
     }
 
-    /** 背包里是否有地方放产出物。 */
-    private static boolean hasRoomForResult(ItemStack result) {
-        if (mc.player == null) return false;
-        if (result.isEmpty()) return true;
 
-        var inv = mc.player.getInventory();
-        if (inv.getFreeSlot() != -1) return true;
-
-        // 没有空格时，能并入已有堆叠也算有位置
-        for (int i = 0; i < inv.getContainerSize(); i++) {
-            ItemStack stack = inv.getItem(i);
-            if (stack.isEmpty()) continue;
-            if (ItemStack.isSameItemSameComponents(stack, result)
-                && stack.getCount() + result.getCount() <= inv.getMaxStackSize(stack)) {
-                return true;
-            }
-        }
-        return false;
-    }
 
     /** 把交易成本描述成「32 个绿宝石 + 1 本书」这样的文本。 */
     private static String describeCost(MerchantOffer offer) {
