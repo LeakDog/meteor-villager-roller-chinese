@@ -1,6 +1,6 @@
-package maxsuperman.addons.roller.gui.screens;
+package leakdog.addons.roller.gui.screens;
 
-import maxsuperman.addons.roller.modules.VillagerRoller;
+import leakdog.addons.roller.modules.VillagerRoller;
 import meteordevelopment.meteorclient.gui.GuiTheme;
 import meteordevelopment.meteorclient.gui.WindowScreen;
 import meteordevelopment.meteorclient.gui.widgets.containers.WHorizontalList;

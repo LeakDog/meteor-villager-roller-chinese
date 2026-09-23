@@ -1,6 +1,6 @@
-package maxsuperman.addons.roller;
+package leakdog.addons.roller;
 
-import maxsuperman.addons.roller.modules.VillagerRoller;
+import leakdog.addons.roller.modules.VillagerRoller;
 import meteordevelopment.meteorclient.addons.GithubRepo;
 import meteordevelopment.meteorclient.addons.MeteorAddon;
 import meteordevelopment.meteorclient.systems.modules.Modules;
@@ -12,7 +12,7 @@ public class VillagerRollerAddon extends MeteorAddon {
 
     @Override
     public void onInitialize() {
-        LOG.info("Initializing Meteor Villager Roller");
+        LOG.info("Initializing Meteor Villager Roller (Chinese)");
 
         // Modules
         Modules.get().add(new VillagerRoller());
@@ -25,7 +25,7 @@ public class VillagerRollerAddon extends MeteorAddon {
 
     @Override
     public String getPackage() {
-        return "maxsuperman.addons.roller";
+        return "leakdog.addons.roller";
     }
 
     @Override

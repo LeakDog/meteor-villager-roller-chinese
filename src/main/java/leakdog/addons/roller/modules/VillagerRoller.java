@@ -1,11 +1,11 @@
-package maxsuperman.addons.roller.modules;
+package leakdog.addons.roller.modules;
 
 import it.unimi.dsi.fastutil.Pair;
 import it.unimi.dsi.fastutil.objects.ObjectIntImmutablePair;
-import maxsuperman.addons.roller.gui.screens.EnchantmentSelectScreen;
-import maxsuperman.addons.roller.utils.OneBotNotifier;
-import maxsuperman.addons.roller.utils.RollNotifier;
-import maxsuperman.addons.roller.utils.TradeLocker;
+import leakdog.addons.roller.gui.screens.EnchantmentSelectScreen;
+import leakdog.addons.roller.utils.OneBotNotifier;
+import leakdog.addons.roller.utils.RollNotifier;
+import leakdog.addons.roller.utils.TradeLocker;
 import meteordevelopment.meteorclient.MeteorClient;
 import meteordevelopment.meteorclient.events.entity.player.InteractEntityEvent;
 import meteordevelopment.meteorclient.events.entity.player.StartBreakingBlockEvent;

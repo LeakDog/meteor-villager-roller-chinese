@@ -17,7 +17,7 @@
   "environment": "client",
   "entrypoints": {
     "meteor": [
-      "maxsuperman.addons.roller.VillagerRollerAddon"
+      "leakdog.addons.roller.VillagerRollerAddon"
     ]
   },
   "mixins": [],

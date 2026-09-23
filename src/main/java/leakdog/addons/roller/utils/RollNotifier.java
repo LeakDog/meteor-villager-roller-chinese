@@ -1,4 +1,4 @@
-package maxsuperman.addons.roller.utils;
+package leakdog.addons.roller.utils;
 
 import meteordevelopment.meteorclient.MeteorClient;
 import meteordevelopment.meteorclient.events.world.TickEvent;
