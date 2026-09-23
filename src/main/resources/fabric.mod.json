@@ -3,7 +3,7 @@
   "id": "meteor-villager-roller-chinese",
   "version": "${version}",
   "name": "Meteor Villager Roller (Chinese)",
-  "description": "Addon that rolls trades on villagers. Chinese localization with enhanced notifications and optional OneBot push.",
+  "description": "Rerolls villager trades until the wanted enchantment shows up. Chinese localization with enhanced notifications and optional OneBot push.",
   "authors": [
     "FlexCoral",
     "seasnail8169",

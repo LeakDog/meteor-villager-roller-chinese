@@ -40,7 +40,7 @@ public class OneBotNotifier {
 
     /**
      * 异步推送一条文本消息。任何失败都只通过 {@code onError} 汇报，不会抛出，
-     * 也不会影响滚动逻辑。
+     * 也不会影响刷取逻辑。
      */
     public static void send(Target target, String message, Consumer<String> onError) {
         dispatch(target, message, null, onError);
@@ -73,7 +73,7 @@ public class OneBotNotifier {
 
             // 第二步：往配置的目标实际发一条 ping，确认目标 ID 与发送权限都没问题
             Result ping = request(endpoint + "/send_msg", target.token(),
-                buildBody(target, id, "【村民滚动器】ping —— 这是一条连接测试消息"));
+                buildBody(target, id, "【村民刷附魔】ping —— 这是一条连接测试消息"));
             if (ping.ok()) {
                 onInfo.accept("测试消息已发送到" + describeTarget(target) + "，请检查是否收到");
             } else {

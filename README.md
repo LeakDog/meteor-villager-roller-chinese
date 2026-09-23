@@ -1,9 +1,10 @@
 
-# Meteor Villager Roller 汉化版
+# Meteor Villager Roller 汉化版（村民刷附魔）
 
 ![checks](https://github.com/LeakDog/meteor-villager-roller-chinese/actions/workflows/checks.yml/badge.svg)
+![release](https://github.com/LeakDog/meteor-villager-roller-chinese/actions/workflows/release.yml/badge.svg)
 
-滚动村民职业，直到刷出想要的附魔书。这是 [Meteor Client](https://github.com/MeteorDevelopment/meteor-client)
+反复重置村民职业，直到刷出想要的附魔书。这是 [Meteor Client](https://github.com/MeteorDevelopment/meteor-client)
 的附属模块（addon），面向在服务器上刷图书管理员附魔的场景。
 
 本项目在汉化的基础上重写了提醒逻辑，并新增了 QQ 推送，使得挂机刷附魔时不必盯着屏幕。
@@ -17,7 +18,7 @@
 需要 Java 25。若要在旧版本 Minecraft 服务器上刷村民，请使用
 [ViaFabricPlus](https://github.com/ViaVersion/ViaFabricPlus)。
 
-本项目版本号从 `0.0.1` 独立起算，与上游的版本序列无关。
+本项目版本号独立起算，与上游的版本序列无关。
 
 > 本模块与原版 Meteor Villager Roller 互斥，`fabric.mod.json` 中已声明 `breaks`。
 > 两者注册同名模块会冲突，请只安装其中一个。
@@ -47,13 +48,13 @@ Meteor 使用自绘字体渲染它自己的界面，而该字体只烘焙了 ASC
 
 1. 准备一个村民（不能是傻子）
 2. 准备若干讲台（32 个比较合适）
-3. 建议准备一把斧头，品质越好滚动越快
+3. 建议准备一把斧头，品质越好刷取越快
 4. 把自己和村民关在一个封闭空间里，除你们之外不要有其他可自由移动的实体或方块
 5. 用半砖、方块、楼梯限制村民走动（**不要用活板门**，会干扰寻路）
 6. 在村民能够到的位置放一个讲台，确认手动换职业可行
 7. 按需配置模块并启用
 8. 按聊天提示依次选择方块和村民
-9. 让模块自己跑（若开启了「Pause on screens」，切出窗口会打开暂停菜单并暂停滚动）
+9. 让模块自己跑（若开启了「Pause on screens」，切出窗口会打开暂停菜单并暂停刷取）
 10. 收工
 
 ## 功能说明
@@ -114,7 +115,7 @@ Meteor 使用自绘字体渲染它自己的界面，而该字体只烘焙了 ASC
 - 这是**出网行为**，会把附魔名、等级和价格发送到你自己配置的端点。默认关闭，需显式填写配置才会触发。
 - `onebot-token` 是凭证，会随 Meteor 配置以**明文**保存在本地，但不会出现在任何聊天消息或日志中。
 - 建议只填本机回环地址（`127.0.0.1`）。若填公网 `http://` 地址，token 与消息内容均为明文传输。
-- 请求异步执行，网络故障只会在聊天里报一条错误，不会阻塞游戏或影响滚动逻辑。
+- 请求异步执行，网络故障只会在聊天里报一条错误，不会阻塞游戏或影响刷取逻辑。
 
 ## 已知限制
 
@@ -126,8 +127,8 @@ Meteor 使用自绘字体渲染它自己的界面，而该字体只烘焙了 ASC
   交易界面的行为，无法处理。
 - **无法再与村民交互** —— 同上，界面不同步可以通过重进服务器解决。
 - **不放回讲台** —— 会放回。失败说明该位置已被玩家、村民、其他实体或方块占据。
-  滚动会暂停，手动放置方块后自行恢复。
-- **滚动时会关闭聊天和其他界面** —— 无法避免。请求与村民交互时服务器会强制客户端打开交易
+  刷取会暂停，手动放置方块后自行恢复。
+- **刷取时会关闭聊天和其他界面** —— 无法避免。请求与村民交互时服务器会强制客户端打开交易
   界面并替换当前界面，而打开该界面是获取交易列表的前提。开启「Pause on screens」可以在有
   界面打开时阻止新的交互，处理完后手动与村民交互即可继续。
 - **讲台用完后不会自动捡回** —— 寻路并移动到地面物品既复杂又容易出错。可以用漏斗、
@@ -144,7 +145,7 @@ Meteor 使用自绘字体渲染它自己的界面，而该字体只烘焙了 ASC
 ## 来源与致谢
 
 本项目基于 [maxsupermanhd/meteor-villager-roller](https://github.com/maxsupermanhd/meteor-villager-roller)
-开发，原始滚动逻辑由 **FlexCoral**、**seasnail8169** 和 **Cloudburst** 编写。
+开发，原始刷取逻辑由 **FlexCoral**、**seasnail8169** 和 **Cloudburst** 编写。
 
 按照原项目要求：将 Villager Roller 集成进其他客户端时，若未修改底层功能或代码，
 需事先取得同意或在模块设置/描述中保留署名（例如 `Villager Roller by FlexCoral`）。

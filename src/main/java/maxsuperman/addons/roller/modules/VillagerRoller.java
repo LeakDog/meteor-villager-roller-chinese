@@ -100,7 +100,7 @@ public class VillagerRoller extends Module {
 
     private final Setting<Boolean> saveListToConfig = sgGeneral.add(new BoolSetting.Builder()
         .name("save-list-to-config")
-        .description("是否把滚动列表保存到配置并随配置一起加载")
+        .description("是否把目标附魔列表保存到配置并随配置一起加载")
         .defaultValue(true)
         .build()
     );
@@ -164,7 +164,7 @@ public class VillagerRoller extends Module {
 
     private final Setting<Boolean> pauseOnScreen = sgGeneral.add(new BoolSetting.Builder()
         .name("pause-on-screens")
-        .description("有任何界面打开时暂停滚动")
+        .description("有任何界面打开时暂停刷取")
         .defaultValue(true)
         .build()
     );
@@ -217,7 +217,7 @@ public class VillagerRoller extends Module {
 
     private final Setting<Boolean> instantRebreak = sgGeneral.add(new BoolSetting.Builder()
         .name("CivBreak")
-        .description("使用 CivBreak 瞬间挖掉讲台，建议站在讲台格子正上方")
+        .description("使用 CivBreak 瞬间挖掉刷取方块，建议站在该方块正上方")
         .defaultValue(false)
         .build()
     );
@@ -240,7 +240,7 @@ public class VillagerRoller extends Module {
 
     private final Setting<Boolean> cfPausedOnScreen = sgChatFeedback.add(new BoolSetting.Builder()
         .name("paused-on-screen")
-        .description("提示「滚动已暂停，与村民交互以继续」")
+        .description("提示「刷取已暂停，与村民交互以继续」")
         .defaultValue(true)
         .build()
     );
@@ -275,7 +275,7 @@ public class VillagerRoller extends Module {
 
     private final Setting<Boolean> cfPlaceFailed = sgChatFeedback.add(new BoolSetting.Builder()
         .name("place-failed")
-        .description("提示放置失败、无法放置或快捷栏里取不到讲台（这些情况仍会触发放置失败相关设置）")
+        .description("提示放置失败、无法放置或快捷栏里取不到刷取方块（这些情况仍会触发放置失败相关设置）")
         .defaultValue(true)
         .build()
     );
@@ -368,7 +368,7 @@ public class VillagerRoller extends Module {
     private long currentProfessionWaitTime;
 
     public VillagerRoller() {
-        super(Categories.Misc, "villager-roller", "滚动村民交易，直到刷出想要的附魔。");
+        super(Categories.Misc, "villager-roller", "反复重置村民职业，直到刷出想要的附魔。");
     }
 
     @Override
@@ -383,7 +383,7 @@ public class VillagerRoller extends Module {
         RollNotifier.get().stop();
         currentState = State.WAITING_FOR_TARGET_BLOCK;
         if (cfSetup.get()) {
-            info("攻击你想用来滚动的方块");
+            info("攻击你想用来刷取的方块（通常是讲台）");
             warnAboutCustomFont();
         }
     }
@@ -762,7 +762,7 @@ public class VillagerRoller extends Module {
 
         if (pauseOnScreen.get() && mc.gui.screen() != null) {
             if (cfPausedOnScreen.get()) {
-                info("滚动已暂停，与村民交互以继续");
+                info("刷取已暂停，与村民交互以继续");
             }
             return;
         }
@@ -852,7 +852,7 @@ public class VillagerRoller extends Module {
 
                     // 先完成全部提醒，再关闭模块和断线，否则开启自动断线时玩家什么提示都收不到
                     if (cfFoundMatching.get()) {
-                        info(String.format("已找到目标附魔 %s（等级 %d），售价 %d 绿宝石，已停止滚动。",
+                        info(String.format("已找到目标附魔 %s（等级 %d），售价 %d 绿宝石，已停止刷取。",
                             enchantName, enchantLevel, price));
                     }
                     notifyFound(enchantName, enchantLevel, price);
@@ -909,14 +909,14 @@ public class VillagerRoller extends Module {
 
         if (showToast.get()) {
             // Toast 经原版字体渲染，中文可以正常显示
-            mc.gui.toastManager().addToast(new MeteorToast.Builder("村民滚动器")
+            mc.gui.toastManager().addToast(new MeteorToast.Builder("村民刷附魔")
                 .icon(Items.ENCHANTED_BOOK)
                 .text(summary)
                 .build());
         }
 
         if (onebotEnabled.get()) {
-            OneBotNotifier.send(oneBotTarget(), "【村民滚动器】已刷出目标附魔：" + summary, this::error);
+            OneBotNotifier.send(oneBotTarget(), "【村民刷附魔】已刷出目标附魔：" + summary, this::error);
         }
     }
 
@@ -938,7 +938,7 @@ public class VillagerRoller extends Module {
         rollingVillager = villager;
         currentState = State.ROLLING_BREAKING_BLOCK;
         if (cfSetup.get()) {
-            info("已锁定你的村民");
+            info("已选定目标村民，开始刷取");
         }
         event.cancel();
     }
@@ -954,7 +954,7 @@ public class VillagerRoller extends Module {
             mc.getConnection().send(new ServerboundPlayerActionPacket(ServerboundPlayerActionPacket.Action.START_DESTROY_BLOCK, rollingBlockPos, Direction.UP));
         }
         if (cfSetup.get()) {
-            info("已选定滚动方块，现在与你想滚动的村民交互");
+            info("已选定刷取方块，现在与你想刷附魔的村民交互");
         }
     }
 
@@ -969,7 +969,7 @@ public class VillagerRoller extends Module {
     }
 
     /**
-     * 目标位置上是否已是玩家选定的滚动方块。
+     * 目标位置上是否已是玩家选定的刷取方块。
      *
      * <p>模块允许选择任意方块，所以这里按 {@link #rollingBlock} 判断，
      * 而不是把讲台写死 —— 否则选了其他方块时状态机会一直判定为「放错方块」。
@@ -990,9 +990,9 @@ public class VillagerRoller extends Module {
 
         if (rolling) {
             if (rollingBlockPos == null || rollingBlock == null) return;
-            // 村民被杀、卸载或换维度后继续滚动没有意义，且会不断空转
+            // 村民被杀、卸载或换维度后继续刷取没有意义，且会不断空转
             if (rollingVillager == null || !rollingVillager.isAlive()) {
-                error("目标村民已不存在，已停止滚动");
+                error("目标村民已不存在，已停止刷取");
                 toggle();
                 return;
             }
@@ -1014,7 +1014,7 @@ public class VillagerRoller extends Module {
             case ROLLING_WAITING_FOR_VILLAGER_PROFESSION_CLEAR -> {
                 if (isRollingBlockPresent()) {
                     if (cfDiscrepancy.get()) {
-                        info("滚动方块的挖掘被撤销了？");
+                        info("刷取方块的挖掘被撤销了？");
                     }
                     currentState = State.ROLLING_BREAKING_BLOCK;
                     return;
