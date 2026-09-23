@@ -3,6 +3,8 @@ package leakdog.addons.roller.modules;
 import it.unimi.dsi.fastutil.Pair;
 import it.unimi.dsi.fastutil.objects.ObjectIntImmutablePair;
 import leakdog.addons.roller.gui.screens.EnchantmentSelectScreen;
+import leakdog.addons.roller.utils.InventoryRefiller;
+import leakdog.addons.roller.utils.ItemCollector;
 import leakdog.addons.roller.utils.OneBotNotifier;
 import leakdog.addons.roller.utils.RollNotifier;
 import leakdog.addons.roller.utils.TradeLocker;
@@ -83,6 +85,7 @@ public class VillagerRoller extends Module {
     private final SettingGroup sgGeneral = settings.getDefaultGroup();
     private final SettingGroup sgSound = settings.createGroup("Sound");
     private final SettingGroup sgChatFeedback = settings.createGroup("Chat feedback", false);
+    private final SettingGroup sgRestock = settings.createGroup("Restock", false);
     private final SettingGroup sgOneBot = settings.createGroup("OneBot", false);
 
     private final Setting<Boolean> disableIfFound = sgGeneral.add(new BoolSetting.Builder()
@@ -111,6 +114,40 @@ public class VillagerRoller extends Module {
         .description("锁定失败（物品不足、背包已满、已售罄）时保持模块开启并停在交易界面，便于你补货后手动完成。关闭则直接停止")
         .defaultValue(true)
         .visible(lockTrade::get)
+        .build()
+    );
+
+    private final Setting<Boolean> autoRefillHotbar = sgRestock.add(new BoolSetting.Builder()
+        .name("auto-refill-hotbar")
+        .description("快捷栏里的工作方块用完时，自动从背包中拿一组补上。只在物品栏内搬运，不会破坏或放置方块")
+        .defaultValue(true)
+        .build()
+    );
+
+    private final Setting<Boolean> autoCollectDrops = sgRestock.add(new BoolSetting.Builder()
+        .name("auto-collect-drops")
+        .description("背包里的工作方块低于阈值时，调用 Baritone 走到附近掉落的方块旁自动捡起。需要安装 Baritone。全程不会破坏或放置任何方块")
+        .defaultValue(false)
+        .build()
+    );
+
+    private final Setting<Integer> collectThreshold = sgRestock.add(new IntSetting.Builder()
+        .name("collect-threshold")
+        .description("背包内工作方块少于这个数量时才去拾取")
+        .defaultValue(4)
+        .min(1)
+        .sliderRange(1, 32)
+        .visible(autoCollectDrops::get)
+        .build()
+    );
+
+    private final Setting<Integer> collectRadius = sgRestock.add(new IntSetting.Builder()
+        .name("collect-radius")
+        .description("拾取掉落物的搜索半径（方块）")
+        .defaultValue(16)
+        .min(1)
+        .sliderRange(1, 64)
+        .visible(autoCollectDrops::get)
         .build()
     );
 
@@ -317,6 +354,13 @@ public class VillagerRoller extends Module {
         .build()
     );
 
+    private final Setting<Boolean> cfRestock = sgChatFeedback.add(new BoolSetting.Builder()
+        .name("restock")
+        .description("提示从背包补充方块、前往拾取掉落物等补货动作")
+        .defaultValue(true)
+        .build()
+    );
+
     private final Setting<Boolean> cfFoundMatching = sgChatFeedback.add(new BoolSetting.Builder()
         .name("found-matching")
         .description("停止前告知找到了什么")
@@ -359,6 +403,15 @@ public class VillagerRoller extends Module {
         .name("onebot-target-id")
         .description("接收通知的 QQ 号（私聊）或群号（群聊），必须是纯数字")
         .defaultValue("")
+        .visible(onebotEnabled::get)
+        .build()
+    );
+
+    private final Setting<String> onebotAtTargets = sgOneBot.add(new StringSetting.Builder()
+        .name("onebot-at-targets")
+        .description("要 @ 的 QQ 号，多个用逗号分隔；填 all 表示 @全体成员（需要机器人是管理员，且有每日次数限制）。留空则不 @。仅群聊生效")
+        .defaultValue("")
+        .wide()
         .visible(onebotEnabled::get)
         .build()
     );
@@ -455,6 +508,88 @@ public class VillagerRoller extends Module {
         .build()
     );
 
+    // 每类是否带上 @。默认只在需要立刻知晓的事件上 @，
+    // 异常类即使有限流也不适合反复 @ 人。
+    private final Setting<Boolean> onebotAtFound = sgOneBot.add(new BoolSetting.Builder()
+        .name("onebot-at-found")
+        .description("推送「刷出目标附魔」时 @")
+        .defaultValue(true)
+        .visible(() -> onebotEnabled.get() && !onebotAtTargets.get().isBlank())
+        .build()
+    );
+
+    private final Setting<Boolean> onebotAtTradeLocked = sgOneBot.add(new BoolSetting.Builder()
+        .name("onebot-at-trade-locked")
+        .description("推送「锁定成功」时 @")
+        .defaultValue(true)
+        .visible(() -> onebotEnabled.get() && !onebotAtTargets.get().isBlank())
+        .build()
+    );
+
+    private final Setting<Boolean> onebotAtTradeFailed = sgOneBot.add(new BoolSetting.Builder()
+        .name("onebot-at-trade-failed")
+        .description("推送「锁定失败」时 @")
+        .defaultValue(true)
+        .visible(() -> onebotEnabled.get() && !onebotAtTargets.get().isBlank())
+        .build()
+    );
+
+    private final Setting<Boolean> onebotAtTradeInsufficient = sgOneBot.add(new BoolSetting.Builder()
+        .name("onebot-at-trade-insufficient")
+        .description("推送「物品不足」时 @，便于你及时去补货")
+        .defaultValue(true)
+        .visible(() -> onebotEnabled.get() && !onebotAtTargets.get().isBlank())
+        .build()
+    );
+
+    private final Setting<Boolean> onebotAtError = sgOneBot.add(new BoolSetting.Builder()
+        .name("onebot-at-error")
+        .description("推送「运行错误」时 @")
+        .defaultValue(false)
+        .visible(() -> onebotEnabled.get() && !onebotAtTargets.get().isBlank())
+        .build()
+    );
+
+    private final Setting<Boolean> onebotAtStarted = sgOneBot.add(new BoolSetting.Builder()
+        .name("onebot-at-started")
+        .description("推送「开始刷取」时 @")
+        .defaultValue(false)
+        .visible(() -> onebotEnabled.get() && !onebotAtTargets.get().isBlank())
+        .build()
+    );
+
+    private final Setting<Boolean> onebotAtStopped = sgOneBot.add(new BoolSetting.Builder()
+        .name("onebot-at-stopped")
+        .description("推送「停止刷取」时 @")
+        .defaultValue(false)
+        .visible(() -> onebotEnabled.get() && !onebotAtTargets.get().isBlank())
+        .build()
+    );
+
+    private final Setting<Boolean> onebotAtPlaceFailed = sgOneBot.add(new BoolSetting.Builder()
+        .name("onebot-at-place-failed")
+        .description("推送「放置失败」时 @")
+        .defaultValue(false)
+        .visible(() -> onebotEnabled.get() && !onebotAtTargets.get().isBlank())
+        .build()
+    );
+
+    private final Setting<Boolean> onebotAtAnomaly = sgOneBot.add(new BoolSetting.Builder()
+        .name("onebot-at-anomaly")
+        .description("推送「状态异常」时 @")
+        .defaultValue(false)
+        .visible(() -> onebotEnabled.get() && !onebotAtTargets.get().isBlank())
+        .build()
+    );
+
+    private final Setting<Boolean> onebotAtProfessionTimeout = sgOneBot.add(new BoolSetting.Builder()
+        .name("onebot-at-profession-timeout")
+        .description("推送「职业超时」时 @")
+        .defaultValue(false)
+        .visible(() -> onebotEnabled.get() && !onebotAtTargets.get().isBlank())
+        .build()
+    );
+
     private enum State {
         DISABLED,
         WAITING_FOR_TARGET_BLOCK,
@@ -474,6 +609,8 @@ public class VillagerRoller extends Module {
     private final List<RollingEnchantment> searchingEnchants = new ArrayList<>();
     private long failedToPlacePrevMsg = System.currentTimeMillis();
     private long currentProfessionWaitTime;
+    /** 「没装 Baritone」这条警告每次启用只说一遍。 */
+    private boolean warnedNoBaritone;
 
     public VillagerRoller() {
         super(Categories.Misc, "villager-roller", "反复重置村民职业，直到刷出想要的附魔。");
@@ -491,6 +628,7 @@ public class VillagerRoller extends Module {
         RollNotifier.get().stop();
         // 限流记录也要重置，否则上一轮的时间戳会压掉本轮开头的推送
         OneBotNotifier.resetThrottle();
+        warnedNoBaritone = false;
         currentState = State.WAITING_FOR_TARGET_BLOCK;
         if (cfSetup.get()) {
             info("攻击你想用来刷取的方块（通常是讲台）");
@@ -501,6 +639,8 @@ public class VillagerRoller extends Module {
 
     @Override
     public void onDeactivate() {
+        // 模块关了就别让 Baritone 继续走，同时恢复它被临时改掉的挖掘/放置设置
+        if (autoCollectDrops.get()) ItemCollector.stop();
         // 找到目标而停止时已经发过 FOUND，这里只描述停止本身
         pushOneBot(OneBotNotifier.Category.STOPPED, null);
         currentState = State.DISABLED;
@@ -1074,7 +1214,26 @@ public class VillagerRoller extends Module {
         if (values != null) all.putAll(values);
 
         OneBotNotifier.notify(oneBotTarget(), category,
-            OneBotNotifier.fillTemplate(template, all), this::error);
+            OneBotNotifier.fillTemplate(template, all), atTargetsFor(category), this::error);
+    }
+
+    /** 该类别是否要 @ 人，要的话返回解析好的 QQ 列表。 */
+    private List<String> atTargetsFor(OneBotNotifier.Category category) {
+        boolean shouldAt = switch (category) {
+            case FOUND -> onebotAtFound.get();
+            case TRADE_LOCKED -> onebotAtTradeLocked.get();
+            case TRADE_FAILED -> onebotAtTradeFailed.get();
+            case TRADE_INSUFFICIENT -> onebotAtTradeInsufficient.get();
+            case ERROR -> onebotAtError.get();
+            case STARTED -> onebotAtStarted.get();
+            case STOPPED -> onebotAtStopped.get();
+            case PLACE_FAILED -> onebotAtPlaceFailed.get();
+            case ANOMALY -> onebotAtAnomaly.get();
+            case PROFESSION_TIMEOUT -> onebotAtProfessionTimeout.get();
+        };
+        if (!shouldAt) return List.of();
+
+        return OneBotNotifier.parseAtTargets(onebotAtTargets.get());
     }
 
     /**
@@ -1215,6 +1374,57 @@ public class VillagerRoller extends Module {
         if (failedToPlaceDisable.get()) toggle();
     }
 
+    /**
+     * 快捷栏没方块时的补货流程：先从背包搬，搬不到再考虑去捡地上的。
+     *
+     * <p>两条路径都不会破坏或放置任何方块。
+     *
+     * @return 是否已采取行动（此时应等下一 tick 再继续，而不是报放置失败）
+     */
+    private boolean tryRestock(String blockName) {
+        if (rollingBlock == null) return false;
+
+        if (autoRefillHotbar.get()) {
+            InventoryRefiller.Status status = InventoryRefiller.ensureInHotbar(rollingBlock.asItem());
+            if (status == InventoryRefiller.Status.MOVED) {
+                if (cfRestock.get()) info("已从背包补充" + blockName + "到快捷栏");
+                return true;
+            }
+            // 本来就有则说明是别的原因导致取不到，交回原有失败流程
+            if (status == InventoryRefiller.Status.ALREADY_PRESENT) return false;
+        }
+
+        if (!autoCollectDrops.get()) return false;
+
+        // 已经在去捡的路上，不要重复下指令
+        if (ItemCollector.isPathing()) return true;
+
+        int remaining = InventoryRefiller.countInInventory(rollingBlock.asItem());
+        if (remaining >= collectThreshold.get()) return false;
+
+        if (!ItemCollector.isAvailable()) {
+            // 这条提示每 tick 都会走到，只说一次
+            if (cfRestock.get() && !warnedNoBaritone) {
+                warnedNoBaritone = true;
+                warning("未检测到 Baritone，无法自动拾取掉落的" + blockName);
+            }
+            return false;
+        }
+
+        ItemCollector.Status result = ItemCollector.collectNearby(rollingBlock.asItem(), collectRadius.get());
+        if (result == ItemCollector.Status.PATHING) {
+            if (cfRestock.get()) {
+                info("背包里的" + blockName + "只剩 " + remaining + " 个，正前往拾取附近掉落的方块");
+            }
+            return true;
+        }
+
+        if (result == ItemCollector.Status.NO_ITEM_NEARBY && cfRestock.get()) {
+            info("附近没有找到掉落的" + blockName);
+        }
+        return false;
+    }
+
     /** 状态异常的统一出口：按设置输出聊天提示，并按类别推送 OneBot 通知。 */
     private void anomaly(String msg) {
         if (cfDiscrepancy.get()) {
@@ -1292,6 +1502,8 @@ public class VillagerRoller extends Module {
                 String blockName = Names.get(rollingBlock);
                 FindItemResult item = InvUtils.findInHotbar(rollingBlock.asItem());
                 if (!item.found()) {
+                    // 先试着从背包补到快捷栏，补上了就等下一 tick 再放
+                    if (tryRestock(blockName)) return;
                     placeFailed("快捷栏中没有" + blockName);
                     return;
                 }

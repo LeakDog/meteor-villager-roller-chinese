@@ -6,7 +6,9 @@ import meteordevelopment.meteorclient.utils.network.Http;
 import meteordevelopment.meteorclient.utils.network.MeteorExecutor;
 
 import java.net.http.HttpResponse;
+import java.util.ArrayList;
 import java.util.HashMap;
+import java.util.List;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.function.Consumer;
@@ -121,6 +123,21 @@ public class OneBotNotifier {
      * @return 是否真的发出了请求
      */
     public static boolean notify(Target target, Category category, String message, Consumer<String> onError) {
+        return notify(target, category, message, null, onError);
+    }
+
+    /**
+     * 按类别推送一条通知，并可在正文前 @ 指定成员。
+     *
+     * <p>会先做两道拦截，避免异常类事件把 QQ 刷爆：同类别未达最小间隔则丢弃；
+     * 内容与该类别上一条完全相同也丢弃。
+     *
+     * @param atTargets 要 @ 的 QQ 号，元素为 {@code all} 表示 @全体成员。仅群聊生效，
+     *                  为空或私聊时忽略
+     * @return 是否真的发出了请求
+     */
+    public static boolean notify(Target target, Category category, String message,
+                                 List<String> atTargets, Consumer<String> onError) {
         // 模板被玩家清空时视为关闭该类通知
         if (message == null || message.isBlank()) return false;
 
@@ -139,15 +156,40 @@ public class OneBotNotifier {
         lastSentAt.put(category, now);
         lastBody.put(category, message);
 
-        dispatch(target, message, null, onError);
+        dispatch(target, message, atTargets, null, onError);
         return true;
+    }
+
+    /**
+     * 把逗号或空格分隔的 QQ 号解析成列表。
+     *
+     * <p>非数字且不是 {@code all} 的条目会被丢弃，避免把错误内容发给服务端。
+     */
+    public static List<String> parseAtTargets(String raw) {
+        if (raw == null || raw.isBlank()) return List.of();
+
+        List<String> out = new ArrayList<>();
+        for (String part : raw.split("[,，\\s]+")) {
+            String token = part.trim();
+            if (token.isEmpty()) continue;
+
+            if (token.equalsIgnoreCase("all")) {
+                if (!out.contains("all")) out.add("all");
+                continue;
+            }
+            // 只接受纯数字 QQ 号
+            if (token.chars().allMatch(Character::isDigit) && !out.contains(token)) {
+                out.add(token);
+            }
+        }
+        return out;
     }
 
     /**
      * 不经限流直接推送，仅用于连接测试。
      */
     public static void send(Target target, String message, Consumer<String> onError) {
-        dispatch(target, message, null, onError);
+        dispatch(target, message, null, null, onError);
     }
 
     /**
@@ -177,7 +219,7 @@ public class OneBotNotifier {
 
             // 第二步：往配置的目标实际发一条 ping，确认目标 ID 与发送权限都没问题
             Result ping = request(endpoint + "/send_msg", target.token(),
-                buildBody(target, id, "【村民刷附魔】ping —— 这是一条连接测试消息"));
+                buildBody(target, id, "【村民刷附魔】ping —— 这是一条连接测试消息", null));
             if (ping.ok()) {
                 onInfo.accept("测试消息已发送到" + describeTarget(target) + "，请检查是否收到");
             } else {
@@ -186,13 +228,14 @@ public class OneBotNotifier {
         });
     }
 
-    private static void dispatch(Target target, String message, Consumer<String> onInfo, Consumer<String> onError) {
+    private static void dispatch(Target target, String message, List<String> atTargets,
+                                 Consumer<String> onInfo, Consumer<String> onError) {
         String endpoint = normalizeUrl(target.baseUrl(), onError);
         if (endpoint == null) return;
         Long id = parseTargetId(target.targetId(), onError);
         if (id == null) return;
 
-        Map<String, Object> body = buildBody(target, id, message);
+        Map<String, Object> body = buildBody(target, id, message, atTargets);
         String url = endpoint + "/send_msg";
         String token = target.token();
 
@@ -276,13 +319,32 @@ public class OneBotNotifier {
         return new Result(true, "", json);
     }
 
-    private static Map<String, Object> buildBody(Target target, long id, String message) {
+    /**
+     * 组装 send_msg 的请求体。
+     *
+     * <p>用消息段数组而不是字符串加 {@code auto_escape}：数组形式下 {@code text} 段的内容
+     * 本身就不会被当作 CQ 码解析，同时又能插入 {@code at} 段。若换成字符串加 CQ 码，就必须
+     * 关掉 auto_escape，玩家模板里的方括号会有被误解析的风险。
+     */
+    private static Map<String, Object> buildBody(Target target, long id, String message,
+                                                 List<String> atTargets) {
+        boolean group = target.type() == MessageType.Group;
+
+        List<Map<String, Object>> segments = new ArrayList<>();
+
+        // @ 只在群聊里有意义
+        if (group && atTargets != null) {
+            for (String at : atTargets) {
+                segments.add(Map.of("type", "at", "data", Map.of("qq", at)));
+            }
+        }
+        segments.add(Map.of("type", "text", "data", Map.of("text",
+            segments.isEmpty() ? message : " " + message)));
+
         Map<String, Object> body = new HashMap<>();
-        body.put("message_type", target.type() == MessageType.Group ? "group" : "private");
-        body.put(target.type() == MessageType.Group ? "group_id" : "user_id", id);
-        body.put("message", message);
-        // 纯文本发送，避免消息里的字符被当作 CQ 码解析
-        body.put("auto_escape", true);
+        body.put("message_type", group ? "group" : "private");
+        body.put(group ? "group_id" : "user_id", id);
+        body.put("message", segments);
         return body;
     }
 
