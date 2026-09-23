@@ -347,6 +347,71 @@ public class VillagerRoller extends Module {
         .build()
     );
 
+    // 以下模板留空即表示关闭该类推送。可用占位符见各项描述，
+    // {player} 与 {server} 在所有模板中都可用。
+    private final Setting<String> onebotMsgFound = sgOneBot.add(new StringSetting.Builder()
+        .name("onebot-msg-found")
+        .description("刷出目标附魔时的消息。留空则不推送。占位符：{enchant} 附魔名、{level} 等级、{price} 价格、{player} 玩家名、{server} 服务器地址")
+        .defaultValue("【村民刷附魔】已刷出 {enchant} {level} 级，售价 {price} 绿宝石")
+        .wide()
+        .visible(onebotEnabled::get)
+        .build()
+    );
+
+    private final Setting<String> onebotMsgStarted = sgOneBot.add(new StringSetting.Builder()
+        .name("onebot-msg-started")
+        .description("开始刷取时的消息。留空则不推送。占位符：{player}、{server}")
+        .defaultValue("")
+        .wide()
+        .visible(onebotEnabled::get)
+        .build()
+    );
+
+    private final Setting<String> onebotMsgStopped = sgOneBot.add(new StringSetting.Builder()
+        .name("onebot-msg-stopped")
+        .description("刷取停止时的消息（含手动关闭）。留空则不推送。占位符：{player}、{server}")
+        .defaultValue("")
+        .wide()
+        .visible(onebotEnabled::get)
+        .build()
+    );
+
+    private final Setting<String> onebotMsgError = sgOneBot.add(new StringSetting.Builder()
+        .name("onebot-msg-error")
+        .description("运行错误导致中止时的消息，例如目标村民消失。每 30 秒最多一条。占位符：{reason} 原因、{player}、{server}")
+        .defaultValue("【村民刷附魔】刷取中止：{reason}")
+        .wide()
+        .visible(onebotEnabled::get)
+        .build()
+    );
+
+    private final Setting<String> onebotMsgPlaceFailed = sgOneBot.add(new StringSetting.Builder()
+        .name("onebot-msg-place-failed")
+        .description("放置失败时的消息。这类事件会持续触发，每分钟最多一条。留空则不推送。占位符：{reason}、{player}、{server}")
+        .defaultValue("")
+        .wide()
+        .visible(onebotEnabled::get)
+        .build()
+    );
+
+    private final Setting<String> onebotMsgAnomaly = sgOneBot.add(new StringSetting.Builder()
+        .name("onebot-msg-anomaly")
+        .description("状态异常时的消息，例如放置被服务端撤销（通常是反作弊导致）。每分钟最多一条。留空则不推送。占位符：{reason}、{player}、{server}")
+        .defaultValue("")
+        .wide()
+        .visible(onebotEnabled::get)
+        .build()
+    );
+
+    private final Setting<String> onebotMsgProfessionTimeout = sgOneBot.add(new StringSetting.Builder()
+        .name("onebot-msg-profession-timeout")
+        .description("村民未在规定时间内接受职业时的消息。每分钟最多一条。留空则不推送。占位符：{player}、{server}")
+        .defaultValue("")
+        .wide()
+        .visible(onebotEnabled::get)
+        .build()
+    );
+
     private enum State {
         DISABLED,
         WAITING_FOR_TARGET_BLOCK,
@@ -381,15 +446,20 @@ public class VillagerRoller extends Module {
         }
         // 玩家重新启用模块时，停掉上一次还没播完的提示音
         RollNotifier.get().stop();
+        // 限流记录也要重置，否则上一轮的时间戳会压掉本轮开头的推送
+        OneBotNotifier.resetThrottle();
         currentState = State.WAITING_FOR_TARGET_BLOCK;
         if (cfSetup.get()) {
             info("攻击你想用来刷取的方块（通常是讲台）");
             warnAboutCustomFont();
         }
+        pushOneBot(OneBotNotifier.Category.STARTED, null);
     }
 
     @Override
     public void onDeactivate() {
+        // 找到目标而停止时已经发过 FOUND，这里只描述停止本身
+        pushOneBot(OneBotNotifier.Category.STOPPED, null);
         currentState = State.DISABLED;
     }
 
@@ -507,6 +577,10 @@ public class VillagerRoller extends Module {
             WButton testConnection = onebotSection.add(theme.button("测试连接并发送 ping")).expandX().widget();
             testConnection.tooltip = "先验证服务地址与 token，再向配置的目标发送一条 ping 测试消息";
             testConnection.action = () -> OneBotNotifier.test(oneBotTarget(), this::info, this::error);
+
+            WButton previewTemplates = onebotSection.add(theme.button("预览消息模板")).expandX().widget();
+            previewTemplates.tooltip = "在聊天里显示各类消息填好占位符后的样子，不会真的推送";
+            previewTemplates.action = this::previewOneBotTemplates;
         }
 
         WSection loadDataSection = list.add(theme.section("配置保存")).expandX().widget();
@@ -800,6 +874,7 @@ public class VillagerRoller extends Module {
         Optional<Registry<Enchantment>> registry = mc.level.registryAccess().lookup(Registries.ENCHANTMENT);
         if (registry.isEmpty()) {
             error("无法读取附魔注册表，本轮交易检查已跳过");
+            pushOneBot(OneBotNotifier.Category.ERROR, Map.of("reason", "无法读取附魔注册表"));
             mc.player.closeContainer();
             currentState = State.ROLLING_BREAKING_BLOCK;
             return;
@@ -915,9 +990,81 @@ public class VillagerRoller extends Module {
                 .build());
         }
 
-        if (onebotEnabled.get()) {
-            OneBotNotifier.send(oneBotTarget(), "【村民刷附魔】已刷出目标附魔：" + summary, this::error);
+        pushOneBot(OneBotNotifier.Category.FOUND, Map.of(
+            "enchant", enchantName,
+            "level", String.valueOf(enchantLevel),
+            "price", String.valueOf(price)
+        ));
+    }
+
+    /**
+     * 按类别推送 OneBot 通知。总开关关闭、或该类别的消息模板为空时直接返回，
+     * 限流与去重由 {@link OneBotNotifier#notify} 负责。
+     *
+     * @param values 该类别特有的占位符，{@code {player}} 与 {@code {server}} 会自动补上
+     */
+    private void pushOneBot(OneBotNotifier.Category category, Map<String, String> values) {
+        if (!onebotEnabled.get()) return;
+
+        String template = switch (category) {
+            case FOUND -> onebotMsgFound.get();
+            case STARTED -> onebotMsgStarted.get();
+            case STOPPED -> onebotMsgStopped.get();
+            case ERROR -> onebotMsgError.get();
+            case PLACE_FAILED -> onebotMsgPlaceFailed.get();
+            case ANOMALY -> onebotMsgAnomaly.get();
+            case PROFESSION_TIMEOUT -> onebotMsgProfessionTimeout.get();
+        };
+        if (template == null || template.isBlank()) return;
+
+        Map<String, String> all = new HashMap<>();
+        all.put("player", mc.player != null ? mc.player.getName().getString() : "");
+        all.put("server", describeServer());
+        if (values != null) all.putAll(values);
+
+        OneBotNotifier.notify(oneBotTarget(), category,
+            OneBotNotifier.fillTemplate(template, all), this::error);
+    }
+
+    /**
+     * 把各类消息模板用示例数据填好后打印到聊天，方便玩家确认占位符写对了。
+     * 不会发出任何请求。
+     */
+    private void previewOneBotTemplates() {
+        Map<String, String> sample = new HashMap<>();
+        sample.put("player", mc.player != null ? mc.player.getName().getString() : "示例玩家");
+        sample.put("server", describeServer());
+        sample.put("enchant", "经验修补");
+        sample.put("level", "1");
+        sample.put("price", "17");
+        sample.put("reason", "示例原因");
+
+        boolean any = false;
+        for (OneBotNotifier.Category category : OneBotNotifier.Category.values()) {
+            String template = switch (category) {
+                case FOUND -> onebotMsgFound.get();
+                case STARTED -> onebotMsgStarted.get();
+                case STOPPED -> onebotMsgStopped.get();
+                case ERROR -> onebotMsgError.get();
+                case PLACE_FAILED -> onebotMsgPlaceFailed.get();
+                case ANOMALY -> onebotMsgAnomaly.get();
+                case PROFESSION_TIMEOUT -> onebotMsgProfessionTimeout.get();
+            };
+            if (template == null || template.isBlank()) continue;
+
+            any = true;
+            info(category.label() + "：" + OneBotNotifier.fillTemplate(template, sample));
         }
+
+        if (!any) {
+            info("所有消息模板都是空的，当前不会推送任何通知");
+        }
+    }
+
+    /** 当前所连服务器地址，单人或取不到时返回「单人游戏」。 */
+    private String describeServer() {
+        if (mc.getCurrentServer() != null) return mc.getCurrentServer().ip;
+        return "单人游戏";
     }
 
     /** 收集当前的 OneBot 连接配置。 */
@@ -965,7 +1112,16 @@ public class VillagerRoller extends Module {
             }
             failedToPlacePrevMsg = System.currentTimeMillis();
         }
+        pushOneBot(OneBotNotifier.Category.PLACE_FAILED, Map.of("reason", msg));
         if (failedToPlaceDisable.get()) toggle();
+    }
+
+    /** 状态异常的统一出口：按设置输出聊天提示，并按类别推送 OneBot 通知。 */
+    private void anomaly(String msg) {
+        if (cfDiscrepancy.get()) {
+            info(msg);
+        }
+        pushOneBot(OneBotNotifier.Category.ANOMALY, Map.of("reason", msg));
     }
 
     /**
@@ -993,6 +1149,7 @@ public class VillagerRoller extends Module {
             // 村民被杀、卸载或换维度后继续刷取没有意义，且会不断空转
             if (rollingVillager == null || !rollingVillager.isAlive()) {
                 error("目标村民已不存在，已停止刷取");
+                pushOneBot(OneBotNotifier.Category.ERROR, Map.of("reason", "目标村民已不存在"));
                 toggle();
                 return;
             }
@@ -1008,14 +1165,13 @@ public class VillagerRoller extends Module {
                     currentState = State.ROLLING_WAITING_FOR_VILLAGER_PROFESSION_CLEAR;
                 } else if (!instantRebreak.get() && !BlockUtils.breakBlock(rollingBlockPos, true)) {
                     error("无法破坏指定的方块");
+                    pushOneBot(OneBotNotifier.Category.ERROR, Map.of("reason", "无法破坏指定的方块"));
                     toggle();
                 }
             }
             case ROLLING_WAITING_FOR_VILLAGER_PROFESSION_CLEAR -> {
                 if (isRollingBlockPresent()) {
-                    if (cfDiscrepancy.get()) {
-                        info("刷取方块的挖掘被撤销了？");
-                    }
+                    anomaly("刷取方块的挖掘被撤销了？");
                     currentState = State.ROLLING_BREAKING_BLOCK;
                     return;
                 }
@@ -1058,20 +1214,17 @@ public class VillagerRoller extends Module {
                     if (cfProfessionTimeout.get()) {
                         info("村民在规定时间内没有接受职业");
                     }
+                    pushOneBot(OneBotNotifier.Category.PROFESSION_TIMEOUT, null);
                     currentState = State.ROLLING_BREAKING_BLOCK;
                     return;
                 }
                 if (mc.level.getBlockState(rollingBlockPos) == Blocks.AIR.defaultBlockState()) {
-                    if (cfDiscrepancy.get()) {
-                        info("方块放置被服务器撤销（可能是反作弊）");
-                    }
+                    anomaly("方块放置被服务器撤销（可能是反作弊）");
                     currentState = State.ROLLING_PLACING_BLOCK;
                     return;
                 }
                 if (!isRollingBlockPresent()) {
-                    if (cfDiscrepancy.get()) {
-                        info("放上去的方块不对？！");
-                    }
+                    anomaly("放上去的方块不对？！");
                     currentState = State.ROLLING_BREAKING_BLOCK;
                     return;
                 }

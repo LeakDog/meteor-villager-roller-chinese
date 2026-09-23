@@ -8,6 +8,7 @@ import meteordevelopment.meteorclient.utils.network.MeteorExecutor;
 import java.net.http.HttpResponse;
 import java.util.HashMap;
 import java.util.Map;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.function.Consumer;
 
 /**
@@ -15,7 +16,7 @@ import java.util.function.Consumer;
  *
  * <p>安全须知：
  * <ul>
- *     <li>这是出网行为，会把附魔信息发到玩家自己配置的端点，默认关闭。</li>
+ *     <li>这是出网行为，会把刷取信息发到玩家自己配置的端点，默认关闭。</li>
  *     <li>access token 属于凭证，任何情况下都不会写进聊天或日志。</li>
  *     <li>建议只填本机回环地址。若填公网 HTTP 地址，token 与消息内容均为明文传输。</li>
  * </ul>
@@ -33,14 +34,111 @@ public class OneBotNotifier {
         Group
     }
 
+    /**
+     * 通知类别。异常类事件（放置失败、状态异常）可能每 tick 都触发，
+     * 因此每类都带独立的最小间隔，由 {@link #minIntervalMs()} 给出。
+     */
+    public enum Category {
+        /** 刷出目标附魔。这是玩家最关心的事件，不限流。 */
+        FOUND("找到目标", 0),
+        /** 刷取开始。 */
+        STARTED("开始刷取", 0),
+        /** 刷取停止，含手动关闭与异常中止。 */
+        STOPPED("停止刷取", 0),
+        /** 方块放置失败、快捷栏缺方块。可能持续触发，限流 1 分钟。 */
+        PLACE_FAILED("放置失败", 60_000),
+        /** 状态异常：服务端撤销放置、放错方块、挖掘被回滚等，通常是反作弊导致。限流 1 分钟。 */
+        ANOMALY("状态异常", 60_000),
+        /** 村民未在规定时间内接受职业。限流 1 分钟。 */
+        PROFESSION_TIMEOUT("职业超时", 60_000),
+        /** 因错误中止，例如附魔注册表读不到、目标村民消失。限流 30 秒。 */
+        ERROR("运行错误", 30_000);
+
+        private final String label;
+        private final long minIntervalMs;
+
+        Category(String label, long minIntervalMs) {
+            this.label = label;
+            this.minIntervalMs = minIntervalMs;
+        }
+
+        public String label() {
+            return label;
+        }
+
+        /** 同一类别两条推送之间的最小间隔，0 表示不限流。 */
+        public long minIntervalMs() {
+            return minIntervalMs;
+        }
+    }
+
     /** 一次请求所需的全部连接参数。 */
     public record Target(String baseUrl, String token, MessageType type, String targetId) {}
 
+    /**
+     * 把模板里的 {@code {占位符}} 替换成实际值。
+     *
+     * <p>未被 {@code values} 覆盖的占位符会原样保留，这样玩家写错名字时能直接看出来，
+     * 而不是得到一段莫名少了内容的消息。
+     */
+    public static String fillTemplate(String template, Map<String, String> values) {
+        if (template == null || template.isEmpty()) return "";
+        if (values == null || values.isEmpty()) return template;
+
+        String result = template;
+        for (Map.Entry<String, String> entry : values.entrySet()) {
+            result = result.replace("{" + entry.getKey() + "}", entry.getValue());
+        }
+        return result;
+    }
+
+    /** 各类别上次推送成功的时间戳，用于限流。 */
+    private static final Map<Category, Long> lastSentAt = new ConcurrentHashMap<>();
+
+    /** 各类别上次推送的正文，用于抑制连续重复内容。 */
+    private static final Map<Category, String> lastBody = new ConcurrentHashMap<>();
+
     private OneBotNotifier() {}
 
+    /** 清空限流与去重状态，在模块重新启用时调用，避免沿用上一轮的记录。 */
+    public static void resetThrottle() {
+        lastSentAt.clear();
+        lastBody.clear();
+    }
+
     /**
-     * 异步推送一条文本消息。任何失败都只通过 {@code onError} 汇报，不会抛出，
-     * 也不会影响刷取逻辑。
+     * 按类别推送一条通知。
+     *
+     * <p>会先做两道拦截，避免异常类事件把 QQ 刷爆：同类别未达最小间隔则丢弃；
+     * 内容与该类别上一条完全相同也丢弃。
+     *
+     * @return 是否真的发出了请求
+     */
+    public static boolean notify(Target target, Category category, String message, Consumer<String> onError) {
+        // 模板被玩家清空时视为关闭该类通知
+        if (message == null || message.isBlank()) return false;
+
+        long now = System.currentTimeMillis();
+        long interval = category.minIntervalMs();
+
+        if (interval > 0) {
+            Long last = lastSentAt.get(category);
+            if (last != null && now - last < interval) return false;
+
+            // 同类别内容没变化就不重复发，例如放置失败原因一直是「快捷栏中没有讲台」
+            String previous = lastBody.get(category);
+            if (previous != null && previous.equals(message)) return false;
+        }
+
+        lastSentAt.put(category, now);
+        lastBody.put(category, message);
+
+        dispatch(target, message, null, onError);
+        return true;
+    }
+
+    /**
+     * 不经限流直接推送，仅用于连接测试。
      */
     public static void send(Target target, String message, Consumer<String> onError) {
         dispatch(target, message, null, onError);
