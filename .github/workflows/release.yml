@@ -1,0 +1,44 @@
+name: release
+on:
+  push:
+    tags:
+      - '*'
+permissions:
+  contents: write
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+        with:
+          # 版本号里会嵌入 git 短哈希，需要完整历史才能正确解析
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Wrapper Validation
+        uses: gradle/actions/wrapper-validation@v6
+
+      - name: Setup JDK
+        uses: actions/setup-java@v6
+        with:
+          java-version: 25
+          distribution: temurin
+
+      - name: Set up Gradle
+        uses: gradle/actions/setup-gradle@v6
+
+      - name: Build
+        run: ./gradlew build
+
+      - name: Create release
+        # 钉到 v3.0.3 的 commit SHA。原先用的 marvinpinto/action-automatic-releases@latest
+        # 已被归档，且 @latest 是可变引用
+        uses: softprops/action-gh-release@efb35369e0ad2afab669f228072c1b0d510eae64
+        with:
+          tag_name: ${{ github.ref_name }}
+          name: ${{ github.ref_name }}
+          generate_release_notes: true
+          prerelease: false
+          fail_on_unmatched_files: true
+          files: build/libs/*.jar

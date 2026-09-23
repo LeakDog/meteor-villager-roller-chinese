@@ -1,0 +1,35 @@
+{
+  "schemaVersion": 1,
+  "id": "meteor-villager-roller-chinese",
+  "version": "${version}",
+  "name": "Meteor Villager Roller (Chinese)",
+  "description": "Addon that rolls trades on villagers. Chinese localization with enhanced notifications and optional OneBot push.",
+  "authors": [
+    "FlexCoral",
+    "seasnail8169",
+    "Cloudburst",
+    "LeakDog"
+  ],
+  "contact": {
+    "repo": "https://github.com/LeakDog/meteor-villager-roller-chinese"
+  },
+  "icon": "assets/roller/icon.png",
+  "environment": "client",
+  "entrypoints": {
+    "meteor": [
+      "maxsuperman.addons.roller.VillagerRollerAddon"
+    ]
+  },
+  "mixins": [],
+  "custom": {
+    "meteor-client:color": "0,255,0"
+  },
+  "depends": {
+    "java": ">=${jdk_version}",
+    "minecraft": "${mc_version}",
+    "meteor-client": "*"
+  },
+  "breaks": {
+    "meteor-villager-roller": "*"
+  }
+}
