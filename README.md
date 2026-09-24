@@ -73,6 +73,10 @@ Meteor 用自绘字体渲染自己的界面，而该字体**不含中日韩字�
 不使用 Baritone 自带的挖掘功能。寻路前会强制关闭 Baritone 的 `allowBreak` 与 `allowPlace`，
 模块停止时恢复原值 —— 否则它会为了抵达目标挖穿你搭的封闭空间。
 
+存量检查在每轮刷取开始时进行，所以 `collect-threshold` 是在方块用完**之前**就触发的。
+若某个掉落物 Baritone 到不了（被墙挡住、在岩浆里等），会在 15 秒后判定为不可达并自动换下
+一个目标，全部试过仍不可达时提示你手动补充，不会原地打转。
+
 ## OneBot / QQ 推送（默认关闭）
 
 通过 [OneBot v11](https://github.com/botuniverse/onebot-11) 协议把刷取过程中的事件推送为

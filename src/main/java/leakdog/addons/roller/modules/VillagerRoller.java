@@ -611,6 +611,10 @@ public class VillagerRoller extends Module {
     private long currentProfessionWaitTime;
     /** 「没装 Baritone」这条警告每次启用只说一遍。 */
     private boolean warnedNoBaritone;
+    /** 「附近都到不了」的警告同样只说一遍，避免每 tick 刷屏。 */
+    private boolean warnedUnreachable;
+    /** 「附近没有掉落物」的提示只说一遍。 */
+    private boolean warnedNoDrops;
 
     public VillagerRoller() {
         super(Categories.Misc, "villager-roller", "反复重置村民职业，直到刷出想要的附魔。");
@@ -629,6 +633,10 @@ public class VillagerRoller extends Module {
         // 限流记录也要重置，否则上一轮的时间戳会压掉本轮开头的推送
         OneBotNotifier.resetThrottle();
         warnedNoBaritone = false;
+        warnedUnreachable = false;
+        warnedNoDrops = false;
+        // 清掉上一轮的不可达记录，环境可能已经变了
+        ItemCollector.reset();
         currentState = State.WAITING_FOR_TARGET_BLOCK;
         if (cfSetup.get()) {
             info("攻击你想用来刷取的方块（通常是讲台）");
@@ -1394,35 +1402,68 @@ public class VillagerRoller extends Module {
             if (status == InventoryRefiller.Status.ALREADY_PRESENT) return false;
         }
 
-        if (!autoCollectDrops.get()) return false;
+        // 背包也空了，这时不看阈值，直接尝试去捡
+        return tryCollectDrops(blockName, true);
+    }
 
-        // 已经在去捡的路上，不要重复下指令
-        if (ItemCollector.isPathing()) return true;
-
-        int remaining = InventoryRefiller.countInInventory(rollingBlock.asItem());
-        if (remaining >= collectThreshold.get()) return false;
+    /**
+     * 存量不足时去捡地上的方块。
+     *
+     * <p>会在刷取过程中主动调用，而不是等快捷栏彻底空了才动 —— 那时背包存量必然是 0，
+     * 阈值就没有意义了。
+     *
+     * @param urgent 是否已经无方块可用。为 true 时忽略阈值
+     * @return 是否正在处理（此时调用方应等待而不是继续放置）
+     */
+    private boolean tryCollectDrops(String blockName, boolean urgent) {
+        if (!autoCollectDrops.get() || rollingBlock == null) return false;
 
         if (!ItemCollector.isAvailable()) {
             // 这条提示每 tick 都会走到，只说一次
-            if (cfRestock.get() && !warnedNoBaritone) {
+            if (urgent && cfRestock.get() && !warnedNoBaritone) {
                 warnedNoBaritone = true;
                 warning("未检测到 Baritone，无法自动拾取掉落的" + blockName);
             }
             return false;
         }
 
-        ItemCollector.Status result = ItemCollector.collectNearby(rollingBlock.asItem(), collectRadius.get());
-        if (result == ItemCollector.Status.PATHING) {
-            if (cfRestock.get()) {
-                info("背包里的" + blockName + "只剩 " + remaining + " 个，正前往拾取附近掉落的方块");
-            }
-            return true;
-        }
+        int remaining = InventoryRefiller.countInInventory(rollingBlock.asItem());
+        // 非紧急时才看阈值；已经没方块可用了就必须去捡
+        if (!urgent && remaining >= collectThreshold.get()) return false;
 
-        if (result == ItemCollector.Status.NO_ITEM_NEARBY && cfRestock.get()) {
-            info("附近没有找到掉落的" + blockName);
+        ItemCollector.Status result =
+            ItemCollector.collectNearby(rollingBlock.asItem(), collectRadius.get());
+
+        switch (result) {
+            case PATHING -> {
+                if (cfRestock.get()) {
+                    info("背包里的" + blockName + "只剩 " + remaining + " 个，正前往拾取附近掉落的方块");
+                }
+                return true;
+            }
+            case ALREADY_PATHING -> {
+                return true;
+            }
+            case ALL_UNREACHABLE -> {
+                // 附近有但都到不了，别再原地打转
+                if (urgent && cfRestock.get() && !warnedUnreachable) {
+                    warnedUnreachable = true;
+                    warning("附近的" + blockName + "都无法抵达（已跳过 "
+                        + ItemCollector.unreachableCount() + " 处），请手动补充");
+                }
+                return false;
+            }
+            case NO_ITEM_NEARBY -> {
+                if (urgent && cfRestock.get() && !warnedNoDrops) {
+                    warnedNoDrops = true;
+                    info("附近没有找到掉落的" + blockName);
+                }
+                return false;
+            }
+            default -> {
+                return false;
+            }
         }
-        return false;
     }
 
     /** 状态异常的统一出口：按设置输出聊天提示，并按类别推送 OneBot 通知。 */
@@ -1466,6 +1507,10 @@ public class VillagerRoller extends Module {
 
         switch (currentState) {
             case ROLLING_BREAKING_BLOCK -> {
+                // 每轮开始时主动看一眼存量。只在快捷栏空了才检查的话，
+                // 那时背包必然也是 0，collect-threshold 就永远不会生效
+                if (tryCollectDrops(Names.get(rollingBlock), false)) return;
+
                 if (instantRebreak.get()) {
                     mc.getConnection().send(new ServerboundPlayerActionPacket(ServerboundPlayerActionPacket.Action.STOP_DESTROY_BLOCK, rollingBlockPos, Direction.DOWN));
                 }

@@ -5,8 +5,10 @@ import net.minecraft.world.entity.item.ItemEntity;
 import net.minecraft.world.item.Item;
 import net.minecraft.world.phys.AABB;
 
-import java.util.Comparator;
+import java.util.ArrayList;
+import java.util.HashSet;
 import java.util.List;
+import java.util.Set;
 
 import static meteordevelopment.meteorclient.MeteorClient.mc;
 
@@ -28,12 +30,27 @@ public class ItemCollector {
     private static Boolean previousAllowBreak;
     private static Boolean previousAllowPlace;
 
+    /** 判定为到不了的掉落物位置，不再重复尝试。 */
+    private static final Set<BlockPos> unreachable = new HashSet<>();
+
+    /** 当前正在前往的目标，用于判断寻路是否失败。 */
+    private static BlockPos currentTarget;
+    /** 开始前往当前目标时的时间，用于超时判定。 */
+    private static long targetStartedAt;
+
+    /** 单个目标允许尝试的最长时间。超过就认为到不了。 */
+    private static final long TARGET_TIMEOUT_MS = 15_000;
+
     private ItemCollector() {}
 
     /** 拾取请求的结果。 */
     public enum Status {
         /** 已让 Baritone 出发。 */
         PATHING,
+        /** 正在前往目标，无需重复下令。 */
+        ALREADY_PATHING,
+        /** 附近有掉落物，但都到不了。 */
+        ALL_UNREACHABLE,
         /** 附近没有找到掉落的方块。 */
         NO_ITEM_NEARBY,
         /** 没装 Baritone 或反射调用失败。 */
@@ -57,7 +74,10 @@ public class ItemCollector {
     }
 
     /**
-     * 在指定半径内找最近的掉落方块并让 Baritone 走过去。
+     * 在指定半径内找最近的、尚未被判定为不可达的掉落方块，并让 Baritone 走过去。
+     *
+     * <p>每次调用都会先检查上一个目标的进展：捡到了就清状态，Baritone 放弃或超时
+     * 则把该位置拉黑，下次自动换一个目标。
      *
      * @param item   要拾取的方块对应的物品
      * @param radius 搜索半径（方块）
@@ -66,17 +86,79 @@ public class ItemCollector {
         if (!isAvailable()) return Status.UNAVAILABLE;
         if (mc.player == null || mc.level == null || item == null) return Status.UNAVAILABLE;
 
-        ItemEntity target = findNearestDrop(item, radius);
-        if (target == null) return Status.NO_ITEM_NEARBY;
+        // 先结算上一个目标的状态
+        if (currentTarget != null) {
+            Progress progress = checkProgress();
+            if (progress == Progress.IN_PROGRESS) return Status.ALREADY_PATHING;
+            if (progress == Progress.FAILED) {
+                unreachable.add(currentTarget);
+            }
+            clearTarget();
+        }
+
+        List<ItemEntity> candidates = findDrops(item, radius);
+        if (candidates.isEmpty()) return Status.NO_ITEM_NEARBY;
+
+        ItemEntity target = null;
+        double best = Double.MAX_VALUE;
+        for (ItemEntity e : candidates) {
+            if (unreachable.contains(e.blockPosition())) continue;
+            double d = e.distanceToSqr(mc.player);
+            if (d < best) {
+                best = d;
+                target = e;
+            }
+        }
+
+        // 附近确实有东西，但全都试过且到不了
+        if (target == null) return Status.ALL_UNREACHABLE;
 
         try {
             disableBreakAndPlace();
             // 走到掉落物附近即可，剩下的靠拾取判定，不需要精确站上去
             setGoalNear(target.blockPosition(), 1);
+
+            currentTarget = target.blockPosition();
+            targetStartedAt = System.currentTimeMillis();
             return Status.PATHING;
         } catch (Throwable t) {
             return Status.UNAVAILABLE;
         }
+    }
+
+    /** 上一个目标的进展。 */
+    private enum Progress {
+        /** 仍在前往。 */
+        IN_PROGRESS,
+        /** 目标已消失，通常意味着捡到了。 */
+        DONE,
+        /** Baritone 放弃或超时，判定为到不了。 */
+        FAILED
+    }
+
+    private static Progress checkProgress() {
+        // 目标掉落物已经不在了，多半是被捡走（或被别人捡了），都算完成
+        if (!dropStillThere(currentTarget)) return Progress.DONE;
+
+        boolean pathing = isPathing();
+
+        // Baritone 已经不再寻路，但目标还在原地，说明它放弃了
+        if (!pathing) return Progress.FAILED;
+
+        // 还在走，但超时了也判定失败，避免卡在一个永远到不了的目标上
+        if (System.currentTimeMillis() - targetStartedAt > TARGET_TIMEOUT_MS) {
+            return Progress.FAILED;
+        }
+
+        return Progress.IN_PROGRESS;
+    }
+
+    /** 指定位置附近是否还有掉落物。 */
+    private static boolean dropStillThere(BlockPos pos) {
+        if (mc.level == null) return false;
+
+        AABB box = new AABB(pos).inflate(1.5);
+        return !mc.level.getEntitiesOfClass(ItemEntity.class, box, e -> e.isAlive()).isEmpty();
     }
 
     /** 停止 Baritone 寻路，并恢复之前改动过的设置。 */
@@ -95,7 +177,24 @@ public class ItemCollector {
             // Baritone 内部结构变动时不影响刷取主流程
         }
 
+        clearTarget();
         restoreBreakAndPlace();
+    }
+
+    /** 清空不可达记录，在模块重新启用时调用。 */
+    public static void reset() {
+        unreachable.clear();
+        clearTarget();
+    }
+
+    /** 当前有多少个位置被判定为到不了。 */
+    public static int unreachableCount() {
+        return unreachable.size();
+    }
+
+    private static void clearTarget() {
+        currentTarget = null;
+        targetStartedAt = 0;
     }
 
     /** Baritone 当前是否正在寻路。 */
@@ -104,20 +203,28 @@ public class ItemCollector {
         try {
             Object baritone = primaryBaritone();
             Object pathingBehavior = baritone.getClass().getMethod("getPathingBehavior").invoke(baritone);
-            return (Boolean) pathingBehavior.getClass().getMethod("isPathing").invoke(pathingBehavior);
+
+            boolean pathing = (Boolean) pathingBehavior.getClass()
+                .getMethod("isPathing").invoke(pathingBehavior);
+            if (pathing) return true;
+
+            // 还在算路也算「在忙」，否则刚下令的那一两 tick 会被误判成放弃
+            Object inProgress = pathingBehavior.getClass()
+                .getMethod("getInProgress").invoke(pathingBehavior);
+            if (inProgress instanceof java.util.Optional<?> opt) return opt.isPresent();
+
+            return false;
         } catch (Throwable t) {
             return false;
         }
     }
 
-    private static ItemEntity findNearestDrop(Item item, int radius) {
-        AABB box = mc.player.getBoundingBox().inflate(radius);
-        List<ItemEntity> drops = mc.level.getEntitiesOfClass(ItemEntity.class, box,
-            e -> e.isAlive() && e.getItem().getItem() == item);
+    private static List<ItemEntity> findDrops(Item item, int radius) {
+        if (mc.player == null || mc.level == null) return new ArrayList<>();
 
-        return drops.stream()
-            .min(Comparator.comparingDouble(e -> e.distanceToSqr(mc.player)))
-            .orElse(null);
+        AABB box = mc.player.getBoundingBox().inflate(radius);
+        return mc.level.getEntitiesOfClass(ItemEntity.class, box,
+            e -> e.isAlive() && e.getItem().getItem() == item);
     }
 
     private static Object primaryBaritone() throws Exception {
